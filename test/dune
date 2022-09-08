@@ -1,0 +1,3 @@
+(test
+ (name thio)
+ (libraries alcotest))
