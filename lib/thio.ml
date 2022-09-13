@@ -10,6 +10,16 @@ let rec intersect eq xs ys =
   | _ :: xs -> intersect eq xs ys
   | [] -> []
 
+let remove_duplicates eq lst =
+  List.fold_left (fun acc x ->
+      let exists = List.exists (fun v -> eq v x) acc in
+      if exists then
+        acc
+      else
+        x :: acc
+    ) [] lst
+  |> List.rev
+
 type type_err = TypeError of string
 
 let (let*) x f = Result.bind x f
@@ -81,6 +91,12 @@ let null_subst : subst = []
 (* TODO give a name *)
 let (+->) (u : tyvar) (t : typ) : subst = [(u, t)]
 
+let apply_list (s : subst) (lst : 'a list) (apply_fn : subst -> 'a -> 'a) : 'a list =
+  List.map (fun x -> apply_fn s x) lst
+
+let ftv_list (lst : 'a list) (ftv_fn : 'a -> tyvar list) : tyvar list =
+  lst |> List.concat_map ftv_fn |> remove_duplicates equal_tyvar
+
 let rec apply_typ (s : subst) (typ : typ) : typ =
   match typ with
   | TVar u -> (
@@ -113,6 +129,7 @@ let var_bind (u : tyvar) (t : typ) : (subst, type_err) Result.t =
   match t with
   | t when equal_typ (TVar u) t -> Ok null_subst
   | t when List.exists (fun v -> equal_tyvar v u) (ftv_typ t) -> Error (TypeError "occurs check fails")
+  (* It should be kind-preserving *)
   | t when not (equal_kind (kind_tyvar u) (kind_typ t)) -> Error (TypeError "kinds do not match")
   | _ -> Ok (u +-> t)
 
@@ -134,6 +151,39 @@ let rec match_ (t1 : typ) (t2 : typ) : (subst, type_err) Result.t =
      let* sl = match_ l l' in
      let* sr = match_ r r' in
      merge sl sr
+  (* It should be kind-preserving *)
   | TVar u, t when equal_kind (kind_tyvar u) (kind_typ t) -> Ok (u +-> t)
   | TCon tc1, TCon tc2 when equal_tycon tc1 tc2 -> Ok null_subst
   | _ -> Error (TypeError "types do not match")
+
+(* |- Type Classes, Predicates and Qualified Types *)
+
+type pred = IsIn of id * typ
+[@@deriving eq]
+
+type qual = pred list * typ
+[@@deriving eq]
+
+let apply_pred (s : subst) (IsIn (i, t)) : pred =
+  IsIn (i, apply_typ s t)
+
+let ftv_pred (IsIn (_i, t)) : tyvar list =
+  ftv_typ t
+
+let apply_qual (s : subst) (qual : qual) : qual =
+  let (ps, typ) = qual in
+  (apply_list s ps apply_pred), (apply_typ s typ)
+
+let ftv_qual ((ps, t) : qual) : tyvar list =
+  union equal_tyvar (ftv_list ps ftv_pred) (ftv_typ t)
+
+let lift f (IsIn (i, t)) (IsIn (i', t')) =
+  if equal_id i i'
+  then (f t t')
+  else Error (TypeError "classes differ")
+
+let mgu_pred (p1 : pred) (p2 : pred) : (subst, type_err) result =
+  lift mgu p1 p2
+
+let match_pred (p1 : pred) (p2 : pred) : (subst, type_err) result =
+  lift match_ p1 p2
