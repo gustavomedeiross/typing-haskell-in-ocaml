@@ -1,3 +1,4 @@
 (library
  (public_name thio)
- (name thio))
+ (name thio)
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord ppx_deriving.eq)))
