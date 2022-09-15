@@ -118,14 +118,14 @@ let (@@) (s1 : subst) (s2 : subst) : subst =
   s1 @ s2
 
 (* TODO: I still don't understand why this function is required instead of @@ *)
-let merge (s1 : subst) (s2 : subst) : (subst, type_err) Result.t =
+let merge (s1 : subst) (s2 : subst) : (subst, type_err) result =
   let intersection = intersect equal_tyvar (List.map fst s1) (List.map fst s2) in
   let agree = List.for_all (fun v -> equal_typ (apply_typ s1 (TVar v)) (apply_typ s2 (TVar v))) intersection in
   if agree then Ok (s1 @ s2) else Error (TypeError "merge fails")
 
 (* |- Unification and Matching *)
 
-let var_bind (u : tyvar) (t : typ) : (subst, type_err) Result.t =
+let var_bind (u : tyvar) (t : typ) : (subst, type_err) result =
   match t with
   | t when equal_typ (TVar u) t -> Ok null_subst
   | t when List.exists (fun v -> equal_tyvar v u) (ftv_typ t) -> Error (TypeError "occurs check fails")
@@ -133,7 +133,7 @@ let var_bind (u : tyvar) (t : typ) : (subst, type_err) Result.t =
   | t when not (equal_kind (kind_tyvar u) (kind_typ t)) -> Error (TypeError "kinds do not match")
   | _ -> Ok (u +-> t)
 
-let rec mgu (t1 : typ) (t2 : typ) : (subst, type_err) Result.t =
+let rec mgu (t1 : typ) (t2 : typ) : (subst, type_err) result =
   match t1, t2 with
   | TApp (l, r), TApp (l', r') ->
      let* s1 = mgu l l' in
@@ -145,7 +145,7 @@ let rec mgu (t1 : typ) (t2 : typ) : (subst, type_err) Result.t =
   | _ -> Error (TypeError "Types do not unify")
 
 (* TODO: I still don't understand why this function is required *)
-let rec match_ (t1 : typ) (t2 : typ) : (subst, type_err) Result.t =
+let rec match_ (t1 : typ) (t2 : typ) : (subst, type_err) result =
   match t1, t2 with
   | TApp (l, r), TApp (l', r') ->
      let* sl = match_ l l' in
@@ -161,8 +161,12 @@ let rec match_ (t1 : typ) (t2 : typ) : (subst, type_err) Result.t =
 type pred = IsIn of id * typ
 [@@deriving eq]
 
-type qual = pred list * typ
+type 'a qual = pred list * 'a
 [@@deriving eq]
+
+type qual_type = typ qual
+
+type qual_pred = pred qual
 
 let apply_pred (s : subst) (IsIn (i, t)) : pred =
   IsIn (i, apply_typ s t)
@@ -170,12 +174,24 @@ let apply_pred (s : subst) (IsIn (i, t)) : pred =
 let ftv_pred (IsIn (_i, t)) : tyvar list =
   ftv_typ t
 
-let apply_qual (s : subst) (qual : qual) : qual =
-  let (ps, typ) = qual in
-  (apply_list s ps apply_pred), (apply_typ s typ)
+let apply_qual (s : subst) (qual : 'a qual) (apply_fn : subst -> 'a -> 'a) : 'a qual =
+  let (ps, a) = qual in
+  (apply_list s ps apply_pred), (apply_fn s a)
 
-let ftv_qual ((ps, t) : qual) : tyvar list =
-  union equal_tyvar (ftv_list ps ftv_pred) (ftv_typ t)
+let apply_qual_type (s : subst) (qual : qual_type) : qual_type =
+  apply_qual s qual apply_typ
+
+let apply_qual_pred (s : subst) (qual : qual_pred) : qual_pred =
+  apply_qual s qual apply_pred
+
+let ftv_qual ((ps, a) : 'a qual) (ftv_fn : 'a -> tyvar list) : tyvar list =
+  union equal_tyvar (ftv_list ps ftv_pred) (ftv_fn a)
+
+let ftv_qual_type (qual : qual_type) : tyvar list =
+  ftv_qual qual ftv_typ
+
+let ftv_qual_pred (qual : qual_pred) : tyvar list =
+  ftv_qual qual ftv_pred
 
 let lift f (IsIn (i, t)) (IsIn (i', t')) =
   if equal_id i i'
@@ -187,3 +203,49 @@ let mgu_pred (p1 : pred) (p2 : pred) : (subst, type_err) result =
 
 let match_pred (p1 : pred) (p2 : pred) : (subst, type_err) result =
   lift match_ p1 p2
+
+type inst = qual_pred
+
+type typeclass = id list * inst list
+
+module ClassEnv = Map.Make(String)
+
+type class_env = { classes : typeclass ClassEnv.t;  defaults : typ list }
+
+let classes (env : class_env) (id: id) : (typeclass, type_err) result =
+  match ClassEnv.find_opt id (env.classes) with
+  | Some tc -> Ok tc
+  | None -> Error (TypeError "type class not found")
+
+let super (env : class_env) (id : id) : (id list, type_err) result =
+  classes env id |> Result.map fst
+
+let super_exn env id =
+  match super env id with
+  | Ok x -> x
+  | Error (TypeError e) -> failwith e
+
+let insts (env : class_env) (id : id) : (inst list, type_err) result =
+  Result.map snd (classes env id)
+
+let insts_exn env id =
+  match insts env id with
+  | Ok x -> x
+  | Error (TypeError e) -> failwith e
+
+let defined = Option.is_some
+
+let modify (env : class_env) (id : id) (tc : typeclass) : class_env =
+  let classes' = ClassEnv.add id tc env.classes in
+  { classes = classes'; defaults = env.defaults }
+
+let initial_class_env =
+  {
+    classes = ClassEnv.empty;
+    defaults = [t_integer; t_double];
+  }
+
+type env_transformer = class_env -> class_env option
+
+let (<:>) (f : env_transformer) (g : env_transformer) env =
+  env |> f |> Option.map g
