@@ -66,10 +66,10 @@ let pair t1 t2 = TApp (TApp (t_tuple2, t1), t2)
 
 (* |- Kinds *)
 
-let rec kind_tyvar : tyvar -> kind = function
+let kind_tyvar : tyvar -> kind = function
   | Tyvar (_v, k) -> k
 
-let rec kind_tycon : tycon -> kind = function
+let kind_tycon : tycon -> kind = function
   | Tycon (_c, k) -> k
 
 (* TODO: fix TGen *)
@@ -233,7 +233,7 @@ let insts_exn env id =
   | Ok x -> x
   | Error (TypeError e) -> failwith e
 
-let defined = Option.is_some
+let defined = Result.is_ok
 
 let modify (env : class_env) (id : id) (tc : typeclass) : class_env =
   let classes' = ClassEnv.add id tc env.classes in
@@ -245,7 +245,81 @@ let initial_class_env =
     defaults = [t_integer; t_double];
   }
 
-type env_transformer = class_env -> class_env option
+(* Add class to class environment *)
+let add_class (id : id) (superclasses : id list) (env : class_env) : (class_env, type_err) result =
+  if defined (classes env id)
+     then Error (TypeError "class already defined")
+  else if not (List.for_all (fun super -> defined (classes env super)) superclasses)
+     then Error (TypeError "superclass not defined")
+  else Ok (modify env id (superclasses, []))
 
-let (<:>) (f : env_transformer) (g : env_transformer) env =
-  env |> f |> Option.map g
+(*
+   From "Typing Haskell In Haskell":
+
+   This test covers simple cases where a program provides two instance declarations for the same type
+   (e.g., two declarations for Eq Int),
+
+   but it also covers cases where more interesting overlaps occur
+   (e.g., between the predicates Eq [Int] and Eq [a], or between predicates Eq (a,Bool) and Eq (Int,b)).
+
+   In each case, the existence of an overlap indicates the possibility of a semantic ambiguity,
+   with two applicable instance declarations, and no clear reason to prefer one over the other.
+   This is why Haskell treats such overlaps as an error.
+ *)
+let overlap (p : pred) (q : pred) : bool = defined (mgu_pred p q)
+
+let instance_overlaps_with_existing_definition (instance : pred) (env : class_env) : bool =
+  let IsIn(id, _typ) = instance in
+  let existing_instances = insts_exn env id in
+  existing_instances
+  |> List.map snd
+  |> List.exists (fun q -> overlap instance q) 
+
+let add_instance (predicates : pred list) (instance : pred) (env : class_env) : (class_env, type_err) result =
+  let IsIn(id, _typ) = instance in
+  let class_is_defined = defined (classes env id) in
+  if not (class_is_defined)
+  then Error (TypeError "no class for instance")
+  else if (instance_overlaps_with_existing_definition instance env)
+  then Error (TypeError "overlapping instance")
+  else
+    let existing_insts = insts_exn env id in
+    let clazz = (super_exn env id, (predicates, instance) :: existing_insts) in
+    Ok (modify env id clazz)
+
+type env_transformer = class_env -> (class_env, type_err) result
+  
+let (<:>) (f : env_transformer) (g : env_transformer) (env : class_env) : (class_env, type_err) result =
+  let* env' = f env in g env'
+
+let add_core_classes : env_transformer =
+  add_class "Eq" []
+  <:> add_class "Ord" ["Eq"]
+  <:> add_class "Show" []
+  <:> add_class "Read" []
+  <:> add_class "Bounded" []
+  <:> add_class "Enum" []
+  <:> add_class "Functor" []
+  <:> add_class "Applicative" ["Functor"]
+  <:> add_class "Monad" ["Applicative"]
+
+let add_num_classes : env_transformer =
+  add_class "Num" ["Eq"; "Show"]
+  <:> add_class "Real" ["Num"; "Ord"]
+  <:> add_class "Fractional" ["Num"]
+  <:> add_class "Integral" ["Real"; "Enum"]
+  <:> add_class "RealFrac" ["Real"; "Fractional"]
+  <:> add_class "Floating" ["Fractional"]
+  <:> add_class "RealFloat" ["RealFrac"; "Floating"]
+
+let add_prelude_classes : env_transformer = add_core_classes <:> add_num_classes
+
+let example_insts : env_transformer =
+  add_instance [] (IsIn ("Ord", t_unit))
+  <:> add_instance [] (IsIn ("Ord", t_char))
+  <:> add_instance [] (IsIn ("Ord", t_int))
+  <:> add_instance [
+          IsIn ("Ord", TVar (Tyvar ("a", Star)));
+          IsIn ("Ord", TVar (Tyvar ("b", Star)))]
+        (IsIn ("Ord", (pair (TVar (Tyvar ("a", Star)))
+                            (TVar (Tyvar ("b", Star))))))
