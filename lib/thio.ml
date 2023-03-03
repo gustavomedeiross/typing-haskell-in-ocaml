@@ -158,12 +158,20 @@ let rec match_ (t1 : typ) (t2 : typ) : (subst, type_err) result =
 
 (* |- Type Classes, Predicates and Qualified Types *)
 
+(* The expression `(Num a)` would be represented as `IsIn "Num" (TVar (Tyvar "a" Star))` *)
 type pred = IsIn of id * typ
 [@@deriving eq]
 
 type 'a qual = pred list * 'a
 [@@deriving eq]
 
+(*
+   From "Typing Haskell In Haskell":
+
+   For example, using the Qual and Pred datatypes, the type (Num a) => a -> Int can be represented by:
+   [IsIn "Num" (TVar (Tyvar "a" Star))] :=> (TVar (Tyvar "a" Star) `fn` tInt)
+
+ *)
 type qual_type = typ qual
 
 type qual_pred = pred qual
@@ -254,17 +262,17 @@ let add_class (id : id) (superclasses : id list) (env : class_env) : (class_env,
   else Ok (modify env id (superclasses, []))
 
 (*
-   From "Typing Haskell In Haskell":
+  From "Typing Haskell In Haskell":
 
-   This test covers simple cases where a program provides two instance declarations for the same type
-   (e.g., two declarations for Eq Int),
+  This test covers simple cases where a program provides two instance declarations for the same type
+  (e.g., two declarations for Eq Int),
 
-   but it also covers cases where more interesting overlaps occur
-   (e.g., between the predicates Eq [Int] and Eq [a], or between predicates Eq (a,Bool) and Eq (Int,b)).
+  but it also covers cases where more interesting overlaps occur
+  (e.g., between the predicates Eq [Int] and Eq [a], or between predicates Eq (a,Bool) and Eq (Int,b)).
 
-   In each case, the existence of an overlap indicates the possibility of a semantic ambiguity,
-   with two applicable instance declarations, and no clear reason to prefer one over the other.
-   This is why Haskell treats such overlaps as an error.
+  In each case, the existence of an overlap indicates the possibility of a semantic ambiguity,
+  with two applicable instance declarations, and no clear reason to prefer one over the other.
+  This is why Haskell treats such overlaps as an error.
  *)
 let overlap (p : pred) (q : pred) : bool = defined (mgu_pred p q)
 
@@ -275,6 +283,14 @@ let instance_overlaps_with_existing_definition (instance : pred) (env : class_en
   |> List.map snd
   |> List.exists (fun q -> overlap instance q) 
 
+(*
+  |- Adds a type class instance to the class_env
+
+  On the statement "instance (Ord a, Ord b) => Ord (a, b) where"
+
+  - (Ord a, Ord b) would be the "predicates" argument
+  - Ord (a, b) would be the "instance" argument
+ *)
 let add_instance (predicates : pred list) (instance : pred) (env : class_env) : (class_env, type_err) result =
   let IsIn(id, _typ) = instance in
   let class_is_defined = defined (classes env id) in
@@ -316,8 +332,10 @@ let add_prelude_classes : env_transformer = add_core_classes <:> add_num_classes
 
 let example_insts : env_transformer =
   add_instance [] (IsIn ("Ord", t_unit))
+  (* instance Ord Char where *)
   <:> add_instance [] (IsIn ("Ord", t_char))
   <:> add_instance [] (IsIn ("Ord", t_int))
+  (* instance (Ord a, Ord b) => Ord (a, b) where*)
   <:> add_instance [
           IsIn ("Ord", TVar (Tyvar ("a", Star)));
           IsIn ("Ord", TVar (Tyvar ("b", Star)))]
