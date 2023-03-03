@@ -253,7 +253,14 @@ let initial_class_env =
     defaults = [t_integer; t_double];
   }
 
-(* Add class to class environment *)
+(*
+  |- Add a type class to the class_env
+
+  On the statement "class (Eq a) => Ord a where"
+
+  - Ord would be the "id" argument
+  - (Eq a) would be the "superclasses" argument
+ *)
 let add_class (id : id) (superclasses : id list) (env : class_env) : (class_env, type_err) result =
   if defined (classes env id)
      then Error (TypeError "class already defined")
