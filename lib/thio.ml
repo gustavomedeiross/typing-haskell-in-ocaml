@@ -376,23 +376,23 @@ let example_insts : env_transformer =
   input: IsIn ("Ord", t_int)
   output: [IsIn ("Ord", t_int), IsIn ("Eq", t_int)]
  *)
-let rec by_super (class_env : class_env) (pred : pred) : pred list =
-  let IsIn(clazz, typ) = pred in
+let rec by_super (class_env : class_env) (head : pred) : pred list =
+  let IsIn(clazz, typ) = head in
   let super_classes = super_exn class_env clazz in
   let super_classes_flattened =
     super_classes
     |> List.map (fun clazz -> by_super class_env (IsIn (clazz,typ)))
     |> List.flatten
   in
-  pred :: super_classes_flattened
+  head :: super_classes_flattened
 
 
 (* TODO: understand and refactor *)
-let by_instance (class_env : class_env) (pred : pred) : pred list option =
-  let IsIn(i, t) = pred in
+let by_instance (class_env : class_env) (head : pred) : pred list option =
+  let IsIn(i, t) = head in
   let instances = insts_exn class_env i in
   let try_inst ((preds, head) : qual_pred) : pred list option =
-    let maybe_subst = match_pred head pred |> Result.to_option in
+    let maybe_subst = match_pred head head |> Result.to_option in
     Option.map (fun subst -> List.map (apply_pred subst) preds) maybe_subst
   in
   List.map try_inst instances
