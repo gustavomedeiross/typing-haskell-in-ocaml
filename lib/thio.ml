@@ -144,7 +144,15 @@ let rec mgu (t1 : typ) (t2 : typ) : (subst, type_err) result =
   | TCon tc1, TCon tc2 when equal_tycon tc1 tc2 -> Ok null_subst
   | _ -> Error (TypeError "Types do not unify")
 
-(* TODO: I still don't understand why this function is required *)
+(*
+   From "Typing Haskell In Haskell":
+
+   In the following sections, we will also make use of an operation called matching that is closely related to unification.
+
+   Given two types t1 and t2, the goal of matching is to find a substitution s such that apply s t1 = t2.
+   Because the substitution is applied only to one type, this operation is often described as one-way matching.
+   The calculation of matching substitutions is implemented by a function:
+ *)
 let rec match_ (t1 : typ) (t2 : typ) : (subst, type_err) result =
   match t1, t2 with
   | TApp (l, r), TApp (l', r') ->
@@ -162,6 +170,17 @@ let rec match_ (t1 : typ) (t2 : typ) : (subst, type_err) result =
 type pred = IsIn of id * typ
 [@@deriving eq]
 
+(*
+  |- Represents a qualifier (or also quantifier I believe would also correct) for a type.
+
+   - A function type, e.g.: "(Eq a, Eq b) => a -> b -> Bool"
+   - A type class definition, e.g.: "class Applicativem => Monad m where"
+   - A instance declaration, e.g.: "instance (Ord a, Ord b) => Ord (a, b) where"
+
+   So in Haskell, basically every time we have a "=>".
+
+   The pieces before the "=>" are the predicates, and the pieces after are generic - depends if it's a function, a type class, an instance declaration, etc. - that's why the type is generic.
+ *)
 type 'a qual = pred list * 'a
 [@@deriving eq]
 
@@ -348,3 +367,54 @@ let example_insts : env_transformer =
           IsIn ("Ord", TVar (Tyvar ("b", Star)))]
         (IsIn ("Ord", (pair (TVar (Tyvar ("a", Star)))
                             (TVar (Tyvar ("b", Star))))))
+
+(*
+  |- Returns a list of predicates informing which classes a given type is instance of, "flattened"
+
+  e.g. Knowing that Eq is a superclass of Ord, if the type Int implements Ord
+
+  input: IsIn ("Ord", t_int)
+  output: [IsIn ("Ord", t_int), IsIn ("Eq", t_int)]
+ *)
+let rec by_super (class_env : class_env) (pred : pred) : pred list =
+  let IsIn(clazz, typ) = pred in
+  let super_classes = super_exn class_env clazz in
+  let super_classes_flattened =
+    super_classes
+    |> List.map (fun clazz -> by_super class_env (IsIn (clazz,typ)))
+    |> List.flatten
+  in
+  pred :: super_classes_flattened
+
+
+(* TODO: understand and refactor *)
+let by_instance (class_env : class_env) (pred : pred) : pred list option =
+  let IsIn(i, t) = pred in
+  let instances = insts_exn class_env i in
+  let try_inst ((preds, head) : qual_pred) : pred list option =
+    let maybe_subst = match_pred head pred |> Result.to_option in
+    Option.map (fun subst -> List.map (apply_pred subst) preds) maybe_subst
+  in
+  List.map try_inst instances
+  |> List.find (Option.is_some)
+
+(*
+   From "Typing Haskell In Haskell":
+
+  Given a predicate p and a list of predicates ps, our goal is to determine whether p will hold whenever all of the predicates in ps are satisfied.
+  In the special case where p = IsIn i t and ps = [], this amounts to determining whether t is an instance of the class i.
+
+  TODO: understand and refactor
+ *)
+let rec entail (class_env : class_env) (preds: pred list) (head : pred) : bool =
+  (* Is "head" implied directly by something in "preds"? *)
+  List.exists (fun p ->
+                let p_superclasses = by_super class_env p in
+                List.mem head p_superclasses
+    ) preds ||
+    (* If that's not the case, is there an instance where "preds" satisfies all
+      the preconditions of the instance? *)
+    match by_instance class_env head with
+        | None -> false
+        | Some heads -> List.for_all (entail class_env preds) heads
+
