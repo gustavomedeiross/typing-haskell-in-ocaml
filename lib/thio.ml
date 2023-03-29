@@ -24,6 +24,22 @@ type type_err = TypeError of string
 
 let (let*) x f = Result.bind x f
 
+let sequence_result (lst : ('a, 'b) result list) : ('a list, 'b) result =
+  let rec loop lst acc =
+    match lst with
+    | [] -> Ok (List.rev acc)
+    | Error e :: xs -> Error e
+    | Ok x :: xs -> loop xs (x :: acc)
+  in
+  loop lst []
+
+type ('a, 'b) map_m = ('a -> ('b, type_err) result) -> 'a list -> ('b list, type_err) result
+
+let rec map_m f lst =
+  lst
+  |> List.map f
+  |> sequence_result
+
 (* |- Types *)
 
 type id = string
@@ -174,7 +190,7 @@ type pred = IsIn of id * typ
   |- Represents a qualifier (or also quantifier I believe would also correct) for a type.
 
    - A function type, e.g.: "(Eq a, Eq b) => a -> b -> Bool"
-   - A type class definition, e.g.: "class Applicativem => Monad m where"
+   - A type class definition, e.g.: "class Applicative m => Monad m where"
    - A instance declaration, e.g.: "instance (Ord a, Ord b) => Ord (a, b) where"
 
    So in Haskell, basically every time we have a "=>".
@@ -417,4 +433,40 @@ let rec entail (class_env : class_env) (preds: pred list) (head : pred) : bool =
     match by_instance class_env head with
         | None -> false
         | Some heads -> List.for_all (entail class_env preds) heads
+
+
+(*
+  From "Typing Haskell In Haskell":
+
+  [...] the syntax of Haskell requires class arguments to be of the form v t1 ... tn, where v is a type variable, and t1,...,tn are types (and n ³ 0).
+  The following function allows us to determine whether a given predicate meets these restrictions:
+
+  ---
+
+  So basically this checks if a predicate in in the form of "Class var", e.g. "Num a"
+ *)
+let rec in_head_normal_form (IsIn (_, typ)) : bool =
+  let rec hnf = function
+    | TVar v -> true
+    | TCon _ -> false
+    | TApp (t, _) -> hnf t
+    | TGen _ -> failwith "TGen not implemented"
+  in
+  hnf typ
+
+
+let rec to_head_normal_form (class_env : class_env) (pred : pred) : (pred list, type_err) Result.t =
+  if in_head_normal_form pred then
+    Result.ok([pred])
+  else
+    match by_instance class_env pred with
+    | None -> Result.error (TypeError "context reduction")
+    | Some ps -> to_head_normal_form_list class_env ps
+
+(* TODO: refactor *)
+and to_head_normal_form_list (class_env : class_env) (preds : pred list) : (pred list, type_err) Result.t =
+  let* pss = map_m (to_head_normal_form class_env) preds in
+  pss
+  |> List.concat
+  |> Result.ok
 
