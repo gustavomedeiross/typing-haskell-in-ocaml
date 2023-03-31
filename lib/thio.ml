@@ -464,9 +464,32 @@ let rec to_head_normal_form (class_env : class_env) (pred : pred) : (pred list, 
     | Some ps -> to_head_normal_form_list class_env ps
 
 (* TODO: refactor *)
-and to_head_normal_form_list (class_env : class_env) (preds : pred list) : (pred list, type_err) Result.t =
+and to_head_normal_form_list (class_env : class_env) (preds : pred list) : (pred list, type_err) result
   let* pss = map_m (to_head_normal_form class_env) preds in
   pss
   |> List.concat
   |> Result.ok
 
+
+(* |- Goes through a predicate list and removes entailed entries *)
+let simplify (class_env : class_env) (preds : pred list) : pred list =
+  let rec loop preds simplified_preds =
+    match preds with
+    | [] -> simplified_preds
+    | p :: ps ->
+       if entail class_env (simplified_preds @ ps) p
+       then loop ps simplified_preds
+       else loop ps (p :: simplified_preds)
+  in
+  loop preds []
+
+(*
+   From "Typing Haskell In Haskell":
+
+   Now we can describe the particular form of context reduction used in Haskell as a combination of toHnfs and simplify.
+   Specifically, we use toHnfs to reduce the list of predicates to head-normal form, and then simplify the result:
+ *)
+let reduce (class_env : class_env) (preds : pred list) : (pred list, type_err) result =
+  preds
+  |> to_head_normal_form_list class_env
+  |> Result.map (simplify class_env)
