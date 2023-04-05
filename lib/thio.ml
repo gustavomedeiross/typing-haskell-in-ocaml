@@ -22,6 +22,8 @@ let remove_duplicates eq lst =
 
 type type_err = TypeError of string
 
+type 'a or_type_err = ('a, type_err) result
+
 let (let*) x f = Result.bind x f
 
 let sequence_result (lst : ('a, 'b) result list) : ('a list, 'b) result =
@@ -518,7 +520,7 @@ type scheme = Forall of kind list * qual_type
 let apply_scheme (subst : subst) (Forall (kinds, qual_type)) : scheme =
   Forall (kinds, (apply_qual_type subst qual_type))
 
-let ftv (Forall (_, qual_type)) : tyvar list =
+let ftv_scheme (Forall (_, qual_type)) : tyvar list =
   ftv_qual_type qual_type
 
 (* Type schemes are constructed by quantifying a qualified type qual_type with respect to a list of type variables tyvars: *)
@@ -538,3 +540,22 @@ let quantify (tyvars : tyvar list) (qual_type : qual_type) : scheme =
 let to_scheme (typ : typ) : scheme =
   Forall ([], ([], typ))
 
+(* |- Assumptions *)
+
+(* Assumptions about the type of a variable are represented by values of the Assump datatype, each of which pairs a variable name with a type scheme: *)
+type assump = id * scheme
+
+let apply_assump (subst : subst) (id, scheme) : assump =
+  id, (apply_scheme subst scheme)
+
+let ftv_assump (_, scheme) : tyvar list =
+  ftv_scheme scheme
+
+let rec find id (assumptions : assump list) : scheme or_type_err =
+  match assumptions with
+  | [] -> Error (TypeError ("unbound identifier " ^ id))
+  | (id', scheme) :: assumptions' ->
+     if id == id' then
+       Ok scheme
+     else
+       find id assumptions'
