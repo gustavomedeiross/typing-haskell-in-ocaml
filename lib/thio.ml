@@ -28,14 +28,14 @@ let sequence_result (lst : ('a, 'b) result list) : ('a list, 'b) result =
   let rec loop lst acc =
     match lst with
     | [] -> Ok (List.rev acc)
-    | Error e :: xs -> Error e
+    | Error e :: _xs -> Error e
     | Ok x :: xs -> loop xs (x :: acc)
   in
   loop lst []
 
 type ('a, 'b) map_m = ('a -> ('b, type_err) result) -> 'a list -> ('b list, type_err) result
 
-let rec map_m f lst =
+let map_m f lst =
   lst
   |> List.map f
   |> sequence_result
@@ -208,8 +208,10 @@ type 'a qual = pred list * 'a
 
  *)
 type qual_type = typ qual
+[@@deriving eq]
 
 type qual_pred = pred qual
+[@@deriving eq]
 
 let apply_pred (s : subst) (IsIn (i, t)) : pred =
   IsIn (i, apply_typ s t)
@@ -405,7 +407,7 @@ let rec by_super (class_env : class_env) (head : pred) : pred list =
 
 (* TODO: understand and refactor *)
 let by_instance (class_env : class_env) (head : pred) : pred list option =
-  let IsIn(i, t) = head in
+  let IsIn(i, _t) = head in
   let instances = insts_exn class_env i in
   let try_inst ((preds, head) : qual_pred) : pred list option =
     let maybe_subst = match_pred head head |> Result.to_option in
@@ -445,9 +447,9 @@ let rec entail (class_env : class_env) (preds: pred list) (head : pred) : bool =
 
   So basically this checks if a predicate in in the form of "Class var", e.g. "Num a"
  *)
-let rec in_head_normal_form (IsIn (_, typ)) : bool =
+let in_head_normal_form (IsIn (_, typ)) : bool =
   let rec hnf = function
-    | TVar v -> true
+    | TVar _ -> true
     | TCon _ -> false
     | TApp (t, _) -> hnf t
     | TGen _ -> failwith "TGen not implemented"
@@ -464,7 +466,7 @@ let rec to_head_normal_form (class_env : class_env) (pred : pred) : (pred list, 
     | Some ps -> to_head_normal_form_list class_env ps
 
 (* TODO: refactor *)
-and to_head_normal_form_list (class_env : class_env) (preds : pred list) : (pred list, type_err) result
+and to_head_normal_form_list (class_env : class_env) (preds : pred list) : (pred list, type_err) result =
   let* pss = map_m (to_head_normal_form class_env) preds in
   pss
   |> List.concat
@@ -495,6 +497,8 @@ let reduce (class_env : class_env) (preds : pred list) : (pred list, type_err) r
   |> Result.map (simplify class_env)
 
 (*
+  From "Typing Haskell In Haskell":
+
   As a technical aside, we note that there is some redundancy in the definition of reduce.
   The simplify function is defined in terms of entail, which makes use of the information provided by both superclass and instance declarations.
   The predicates in qs, however, are guaranteed to be in head-normal form, and hence will not match instance declarations that satisfy the syntactic restrictions of Haskell.
@@ -504,6 +508,6 @@ let reduce (class_env : class_env) (preds : pred list) : (pred list, type_err) r
 let sc_entail (class_env : class_env) (preds : pred list) (pred : pred) : bool =
   preds
   |> List.map (by_super class_env)
-  |> List.exists (List.mem p)
+  |> List.exists (List.mem pred)
 
 
