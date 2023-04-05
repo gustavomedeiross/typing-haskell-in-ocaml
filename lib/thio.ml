@@ -510,4 +510,31 @@ let sc_entail (class_env : class_env) (preds : pred list) (pred : pred) : bool =
   |> List.map (by_super class_env)
   |> List.exists (List.mem pred)
 
+(* |- Type Schemes *)
+
+type scheme = Forall of kind list * qual_type
+[@@deriving eq]
+
+let apply_scheme (subst : subst) (Forall (kinds, qual_type)) : scheme =
+  Forall (kinds, (apply_qual_type subst qual_type))
+
+let ftv (Forall (_, qual_type)) : tyvar list =
+  ftv_qual_type qual_type
+
+(* Type schemes are constructed by quantifying a qualified type qual_type with respect to a list of type variables tyvars: *)
+let quantify (tyvars : tyvar list) (qual_type : qual_type) : scheme =
+  let tyvars' =
+    ftv_qual_type qual_type
+    |> List.filter (fun v -> List.mem v tyvars)
+  in
+  let kinds = List.map kind_tyvar tyvars' in
+  let t_gens = List.init (List.length tyvars') Fun.id |> List.map (fun x -> TGen x) in
+  let subst = List.combine tyvars' t_gens in
+  Forall (kinds, (apply_qual_type subst qual_type))
+
+
+(* In practice, we sometimes need to convert a Type into a Scheme without adding any qualifying predicates or quantified variables.
+   For this special case, we can use the following function instead of quantify: *)
+let to_scheme (typ : typ) : scheme =
+  Forall ([], ([], typ))
 
