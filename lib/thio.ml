@@ -493,3 +493,17 @@ let reduce (class_env : class_env) (preds : pred list) : (pred list, type_err) r
   preds
   |> to_head_normal_form_list class_env
   |> Result.map (simplify class_env)
+
+(*
+  As a technical aside, we note that there is some redundancy in the definition of reduce.
+  The simplify function is defined in terms of entail, which makes use of the information provided by both superclass and instance declarations.
+  The predicates in qs, however, are guaranteed to be in head-normal form, and hence will not match instance declarations that satisfy the syntactic restrictions of Haskell.
+
+  It follows that we could make do with a version of simplify that used only the following function in determining (superclass) entailments:
+ *)
+let sc_entail (class_env : class_env) (preds : pred list) (pred : pred) : bool =
+  preds
+  |> List.map (by_super class_env)
+  |> List.exists (List.mem p)
+
+
