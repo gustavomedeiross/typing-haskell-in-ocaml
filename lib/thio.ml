@@ -35,9 +35,7 @@ let sequence_result (lst : ('a, 'b) result list) : ('a list, 'b) result =
   in
   loop lst []
 
-type ('a, 'b) map_m = ('a -> ('b, type_err) result) -> 'a list -> ('b list, type_err) result
-
-let map_m f lst =
+let map_m_result f lst =
   lst
   |> List.map f
   |> sequence_result
@@ -161,6 +159,8 @@ let rec mgu (t1 : typ) (t2 : typ) : (subst, type_err) result =
   | t, TVar u -> var_bind u t
   | TCon tc1, TCon tc2 when equal_tycon tc1 tc2 -> Ok null_subst
   | _ -> Error (TypeError "Types do not unify")
+
+let mgu_exn t1 t2 = mgu t1 t2 |> Result.get_ok
 
 (*
    From "Typing Haskell In Haskell":
@@ -469,7 +469,7 @@ let rec to_head_normal_form (class_env : class_env) (pred : pred) : (pred list, 
 
 (* TODO: refactor *)
 and to_head_normal_form_list (class_env : class_env) (preds : pred list) : (pred list, type_err) result =
-  let* pss = map_m (to_head_normal_form class_env) preds in
+  let* pss = map_m_result (to_head_normal_form class_env) preds in
   pss
   |> List.concat
   |> Result.ok
@@ -559,3 +559,64 @@ let rec find id (assumptions : assump list) : scheme or_type_err =
        Ok scheme
      else
        find id assumptions'
+
+(* |- Type Inference Monad *)
+
+type 'a ti = TI of (subst -> int -> (subst * int * 'a))
+
+let return_ti x = TI (fun s n -> (s, n, x))
+
+let bind_ti (TI f) g = TI (fun s n ->
+                      let (s', m, x) =  f s n in
+                      let TI gx = g x in
+                      gx s' m)
+
+let (let+) x f = bind_ti x f
+
+let run_ti (TI f) =
+  let (_s, _n, x) = f null_subst 0 in
+  x
+
+let rec sequence_ti lst =
+  match lst with
+  | [] -> return_ti []
+  | x :: xs ->
+      let+ y = x in
+      let+ ys = sequence_ti xs in
+      y :: ys |> return_ti
+
+let map_m_ti f lst =
+  lst |> List.map f |> sequence_ti
+
+let get_subst = TI (fun s n -> (s, n, s))
+
+let extend_subst (subst : subst) : unit ti =
+  TI (fun s n -> (subst @@ s, n, ()))
+
+let unify (t1 : typ) (t2 : typ) : unit ti =
+  let+ subst = get_subst in
+  let u = mgu_exn (apply_typ subst t1) (apply_typ subst t2) in
+  extend_subst u
+
+let new_tvar (kind : kind) : typ ti =
+  TI (fun s n ->
+      let var = Tyvar ((enum_id n), kind) in
+      (s, n+1, TVar var))
+
+let rec inst_type ts = function
+  | TApp (l, r) -> TApp (inst_type ts l, inst_type ts r)
+  | TGen n -> List.nth ts n
+  | t -> t
+
+let inst_pred ts (IsIn (c, t)) =
+  IsIn (c, (inst_type ts t))
+
+let inst_pred_list ts preds =
+  List.map (fun p -> inst_pred ts p) preds
+
+let inst_qual_type (ts : typ list) ((ps, t) : qual_type) =
+  (inst_pred_list ts ps, inst_type ts t)
+
+let fresh_inst (Forall (kinds, qual_type)) : qual_type ti =
+  let+ ts = map_m_ti new_tvar kinds in
+  return_ti (inst_qual_type ts qual_type)
