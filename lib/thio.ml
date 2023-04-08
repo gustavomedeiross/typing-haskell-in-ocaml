@@ -20,6 +20,13 @@ let remove_duplicates eq lst =
     ) [] lst
   |> List.rev
 
+let split_triple (lst : ('a * 'b * 'c) list) : 'a list * 'b list * 'c list =
+  let reducer acc (a, b, c) =
+    let (a', b', c')  = acc in
+    (a :: a', b :: b', c :: c')
+  in
+  List.fold_left reducer ([], [], []) lst
+
 type type_err = TypeError of string
 
 type 'a or_type_err = ('a, type_err) result
@@ -629,6 +636,8 @@ let fresh_inst (Forall (kinds, qual_type)) : qual_type ti =
 (* 'e is an expression and 't is a corresponding type *)
 type ('e, 't) infer  = class_env -> assump list -> 'e -> (pred list * 't) ti
 
+(* |-- Type inference for literals *)
+
 type literal =
   | LitInt of int
   | LitChar of char
@@ -646,3 +655,64 @@ let ti_lit : literal -> (pred list * 't) ti = function
   | LitRat _ ->
      let+ v = new_tvar Star in
      return_ti ([IsIn ("Fractional", v)], v)
+
+(* |-- Type inference for patterns *)
+
+(* Patterns are used to inspect and deconstruct data values in lambda abstractions, function and pattern bindings, list comprehensions, do notation, and case expressions. *)
+type pattern =
+  (* matches any value and binds the result to the variable i *)
+  | PVar of id
+  (* corresponding to an underscore _ in Haskell syntax, matches any value, but does not bind any variables *)
+  | PWildcard
+  (* "as-pattern": written using i@pat, binds the variable i to any value that matches the pattern pat,
+     while also binding any variables that appear in pat *)
+  | PAs of id * pattern
+  (* matches only the particular value denoted by the literal l *)
+  | PLit of literal
+  (* is an (n+k) pattern, which matches any positive integral value m that is greater than or equal to k, and binds the variable i to the difference (m-k). *)
+  | PNpk of id * int
+  (* matches only values that were built using the constructor function a with a sequence of arguments that matches pats.
+     We use values a of type Assump to represent constructor functions; all that we really need for typechecking is the type, although the name is useful for debugging.
+     A full implementation would store additional details, such as arity, and use this to check that constructor functions in patterns are always fully applied. *)
+  | PCon of assump * (pattern list)
+
+(* Type inference for patterns has two goals: To calculate a type for each bound variable, and to determine what type of values the whole pattern might match. *)
+let rec ti_pattern : pattern -> (pred list * assump list * typ) ti = function
+  | PVar id ->
+     let+ v = new_tvar Star in
+     return_ti ([], [(id, to_scheme v)], v)
+  | PWildcard ->
+     let+ v = new_tvar Star in
+     return_ti ([], [], v)
+  | PAs (id, pat) ->
+     let+ (preds, assumps, t) = ti_pattern pat in
+     return_ti (preds, (id, to_scheme t) :: assumps, t)
+  | PLit lit ->
+     let+ (preds, t) = ti_lit lit in
+     return_ti (preds, [], t)
+  | PNpk (id, _k) ->
+      let+ t = new_tvar Star in
+      return_ti ([IsIn ("Integral", t)], [(id, to_scheme t)], t)
+
+  (*
+    The case for constructed patterns is slightly more complex:
+    
+    First we use the ti_patterns function, to calculate types ts for each subpattern in pats together with corresponding lists of assumptions in as and predicates in ps.
+    Next, we generate a new type variable typ' that will be used to capture the (as yet unknown) type of the whole pattern.
+    From this information, we would expect the constructor function at the head of the pattern to have type foldr fn t' ts.
+    We can check that this is possible by instantiating the known type sc of the constructor and unifying.
+   *)
+
+  | PCon (assump, patterns) ->
+     let (_id, scheme) = assump in
+     let+ (preds, assumps, types) = ti_patterns patterns in
+     let+ typ' = new_tvar Star in
+     let+ qualifiers, typ = fresh_inst scheme in
+     let+ () = unify typ (List.fold_right fn types typ') in
+     return_ti (preds @ qualifiers, assumps, typ')
+
+
+and ti_patterns (pats : pattern list) : (pred list * assump list * typ list) ti =
+  let+ psasts = map_m_ti ti_pattern pats in
+  let (preds, assumps, types) = split_triple psasts in
+  return_ti (List.concat preds, List.concat assumps, types)
