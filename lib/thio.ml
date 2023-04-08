@@ -569,6 +569,8 @@ let rec find id (assumptions : assump list) : scheme or_type_err =
      else
        find id assumptions'
 
+let find_exn id assumps = find id assumps |> Result.get_ok
+
 (* |- Type Inference Monad *)
 
 type 'a ti = TI of (subst -> int -> (subst * int * 'a))
@@ -716,3 +718,32 @@ and ti_patterns (pats : pattern list) : (pred list * assump list * typ list) ti 
   let+ psasts = map_m_ti ti_pattern pats in
   let (preds, assumps, types) = split_triple psasts in
   return_ti (List.concat preds, List.concat assumps, types)
+
+type expr =
+  | Var of id
+  | Lit of literal
+  (* The Const constructor is used to deal with named constants, such as the constructor or selector functions associated with a
+     particular datatype or the member functions that are associated with a particular class.
+     We use values of type Assump to supply a name and type scheme, which is all the information that we need for the purposes of type inference. *)
+  | Const of assump
+  | Application of expr * expr
+  (* TODO: | Let of bind_group * expr *)
+
+let rec ti_expr (class_env : class_env) (assumps : assump list) (expr : expr) : (pred list * typ) ti =
+  match expr with
+  | Var id ->
+     let scheme = find_exn id assumps in
+     let+ (preds, typ) = fresh_inst scheme in
+     return_ti (preds, typ)
+  | Const (_id, scheme) ->
+      let+ (preds, typ) = fresh_inst scheme in
+      return_ti (preds, typ)
+  | Lit lit -> ti_lit lit
+  | Application (expr', func) ->
+     let+ (expr_ps, expr_typ) = ti_expr class_env assumps expr' in
+     let+ (func_ps, func_typ) = ti_expr class_env assumps func in
+     let+ t = new_tvar Star in
+     let+ () = unify (fn func_typ t) expr_typ in
+     return_ti (expr_ps @ func_ps, t)
+(* TODO: bindgroup *)
+
