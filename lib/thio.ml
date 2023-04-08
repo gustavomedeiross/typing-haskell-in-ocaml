@@ -747,3 +747,14 @@ let rec ti_expr (class_env : class_env) (assumps : assump list) (expr : expr) : 
      return_ti (expr_ps @ func_ps, t)
 (* TODO: bindgroup *)
 
+(* |-- Type inference for alternatives *)
+
+(* An alternative specifies the left and right hand sides of a function definition.
+   With a more complete syntax for Expr, values of type Alt might also be used in the representation of lambda and case expressions. *)
+type alt = (pattern list) * expr
+
+let ti_alt (class_env : class_env) (assumps : assump list) (pats, e : alt) : (pred list * typ) ti =
+  let+ (ps, assumps', ts) = ti_patterns pats in
+  let+ (qs, t) = ti_expr class_env (assumps' @ assumps) e in
+  return_ti (ps @ qs, List.fold_right fn ts t)
+
