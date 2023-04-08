@@ -80,6 +80,8 @@ let fn t1 t2 = TApp (TApp (t_arrow, t1), t2)
 let list typ = TApp (t_list, typ)
 let pair t1 t2 = TApp (TApp (t_tuple2, t1), t2)
 
+let t_string = list t_char
+
 (* |- Kinds *)
 
 let kind_tyvar : tyvar -> kind = function
@@ -620,3 +622,27 @@ let inst_qual_type (ts : typ list) ((ps, t) : qual_type) =
 let fresh_inst (Forall (kinds, qual_type)) : qual_type ti =
   let+ ts = map_m_ti new_tvar kinds in
   return_ti (inst_qual_type ts qual_type)
+
+(* |- Type Inference *)
+
+
+(* 'e is an expression and 't is a corresponding type *)
+type ('e, 't) infer  = class_env -> assump list -> 'e -> (pred list * 't) ti
+
+type literal =
+  | LitInt of int
+  | LitChar of char
+  | LitRat of float
+  | LitStr of string
+
+let ti_lit : literal -> (pred list * 't) ti = function
+  | LitChar _ -> return_ti ([], t_char)
+  (* Integer literals must be instances of the "Num" class *)
+  | LitInt _ ->
+     let+ v = new_tvar Star in
+     return_ti ([IsIn ("Num", v)], v)
+  | LitStr _ -> return_ti ([], t_string)
+  (* Rational literals must be instances of the "Fractional" class *)
+  | LitRat _ ->
+     let+ v = new_tvar Star in
+     return_ti ([IsIn ("Fractional", v)], v)
