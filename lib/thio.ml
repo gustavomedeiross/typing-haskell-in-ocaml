@@ -27,6 +27,10 @@ let split_triple (lst : ('a * 'b * 'c) list) : 'a list * 'b list * 'c list =
   in
   List.fold_left reducer ([], [], []) lst
 
+let rec list_diff xs ys = match xs with
+  | [] -> []
+  | x :: xs' -> if List.mem x ys then list_diff xs' ys else x :: list_diff xs' ys
+
 type type_err = TypeError of string
 
 type 'a or_type_err = ('a, type_err) result
@@ -757,4 +761,57 @@ let ti_alt (class_env : class_env) (assumps : assump list) (pats, e : alt) : (pr
   let+ (ps, assumps', ts) = ti_patterns pats in
   let+ (qs, t) = ti_expr class_env (assumps' @ assumps) e in
   return_ti (ps @ qs, List.fold_right fn ts t)
+
+(* |-- Ambiguity *)
+
+type ambiguity = tyvar * pred list
+
+let ambiguities (vars : tyvar list) (preds : pred list) : ambiguity list =
+  list_diff (ftv_list preds ftv_pred) vars
+  |> List.map (fun v ->
+         (v, List.filter (fun p -> List.mem v (ftv_pred p)) preds))
+
+let num_classes = ["Num"; "Integral"; "Floating"; "Fractional"; "Real"; "RealFloat"; "RealFrac"]
+
+let std_classes = ["Eq"; "Ord"; "Show"; "Read"; "Bounded"; "Enum"; "Ix"; "Functor"; "Monad"; "MonadPlus"] @ num_classes
+
+let candidates (class_env : class_env) (v, preds : ambiguity) : typ list =
+  let ids = List.map (fun (IsIn (id, _)) -> id) preds in
+  let types = List.map (fun (IsIn (_, typ)) -> typ) preds in
+  class_env.defaults
+  |> List.filter
+      (fun default_typ -> List.for_all (fun i -> entail class_env [] (IsIn (i, default_typ))) ids)
+  |> List.filter
+    (fun _default_typ ->
+      List.for_all (fun i -> List.mem i num_classes) ids &&
+      List.for_all (fun i -> List.mem i std_classes) ids &&
+      List.for_all (fun t -> equal_typ t (TVar v)) types)
+
+let with_defaults (f : ambiguity list -> typ list -> 'a) (ce : class_env) (vs : tyvar list) (ps : pred list) : 'a or_type_err =
+  let ambs = ambiguities vs ps in
+  let tss = List.map (fun amb -> candidates ce amb) ambs in
+  if List.exists (fun ts -> ts |> List.length == 0) tss then
+    Error (TypeError "cannot resolve ambiguity")
+  else
+    Ok (f ambs (List.map List.hd tss))
+
+let defaulted_preds : class_env -> tyvar list -> pred list -> pred list or_type_err =
+  with_defaults (fun ambs _ts -> List.concat (List.map snd ambs))
+
+let default_subst : class_env -> tyvar list -> pred list -> subst or_type_err =
+  with_defaults (fun ambs ts -> List.combine (List.map fst ambs) ts)
+
+(* we can use split to rewrite and break ps into a pair (ds, rs) of deferred predicates ds and “retained” predicates rs.
+   The predicates in rs will be used to form an inferred type (rs :=> t) for h, while the predicates in ds will be passed out as constraints to the enclosing scope.
+
+   In addition to a list of predicates ps, the split function is parameterized by two lists of type variables.
+   The first, fs, specifies the set of “fixed” variables, which are just the variables appearing free in the assumptions.
+   The second, gs, specifies the set of variables over which we would like to quantify; *)
+let split (class_env : class_env) (fs: tyvar list) (gs : tyvar list) (ps : pred list) : (pred list * pred list) or_type_err =
+  let* ps' = reduce class_env ps in
+  let (ds, rs) = List.partition (fun p ->
+                     List.for_all (fun x -> List.mem x fs) (ftv_pred p)
+                   ) ps' in
+  let* rs' = defaulted_preds class_env (fs @ gs) rs in
+  Result.ok (ds, list_diff rs rs')
 
