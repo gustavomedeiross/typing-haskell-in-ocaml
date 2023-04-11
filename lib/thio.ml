@@ -231,8 +231,14 @@ type qual_pred = pred qual
 let apply_pred (s : subst) (IsIn (i, t)) : pred =
   IsIn (i, apply_typ s t)
 
+let apply_preds (s : subst) (ps : pred list) : pred list =
+  apply_list s ps apply_pred
+
 let ftv_pred (IsIn (_i, t)) : tyvar list =
   ftv_typ t
+
+let ftv_preds (ps : pred list) : tyvar list =
+  ftv_list ps ftv_pred
 
 let apply_qual (s : subst) (qual : 'a qual) (apply_fn : subst -> 'a -> 'a) : 'a qual =
   let (ps, a) = qual in
@@ -561,8 +567,14 @@ type assump = id * scheme
 let apply_assump (subst : subst) (id, scheme) : assump =
   id, (apply_scheme subst scheme)
 
+let apply_assumps (s : subst) (assumps : assump list) : assump list =
+  apply_list s assumps apply_assump
+
 let ftv_assump (_, scheme) : tyvar list =
   ftv_scheme scheme
+
+let ftv_assumps (assumps : assump list) : tyvar list =
+  ftv_list assumps ftv_assump
 
 let rec find id (assumptions : assump list) : scheme or_type_err =
   match assumptions with
@@ -762,6 +774,11 @@ let ti_alt (class_env : class_env) (assumps : assump list) (pats, e : alt) : (pr
   let+ (qs, t) = ti_expr class_env (assumps' @ assumps) e in
   return_ti (ps @ qs, List.fold_right fn ts t)
 
+let ti_alts (ce : class_env) (assumps : assump list) (alts : alt list) (t : typ) : (pred list) ti =
+  let+ psts = map_m_ti (ti_alt ce assumps) alts in
+  let+ _ = map_m_ti (unify t) (List.map snd psts) in
+  return_ti (List.concat (List.map fst psts))
+
 (* |-- Ambiguity *)
 
 type ambiguity = tyvar * pred list
@@ -815,3 +832,29 @@ let split (class_env : class_env) (fs: tyvar list) (gs : tyvar list) (ps : pred 
   let* rs' = defaulted_preds class_env (fs @ gs) rs in
   Result.ok (ds, list_diff rs rs')
 
+let split_exn ce fs gs ps = split ce fs gs ps |> Result.get_ok
+
+(* |- Binding Groups *)
+
+
+(* |-- Explicitly typed bindings *)
+type expl = id * scheme * (alt list)
+
+let ti_expl (class_env : class_env) (assumptions : assump list) (binding : expl) : pred list ti =
+  let (_id, scheme, alts) = binding in
+  let+ (qs, typ) = fresh_inst scheme in
+  let+ ps = ti_alts class_env assumptions alts typ in
+  let+ subst = get_subst in
+  let qs' = apply_preds subst qs in
+  let typ' = apply_typ subst typ in
+  let fs = ftv_assumps (apply_assumps subst assumptions) in
+  let gs = list_diff (ftv_typ typ') fs in
+  let scheme' = quantify gs (qs', typ') in
+  let ps' = List.filter (fun p -> entail class_env qs' p |> not) (apply_preds subst ps) in
+  let (ds, rs) = split_exn class_env fs gs ps' in
+  if not (equal_scheme scheme scheme') then
+    failwith "signature too general"
+  else if List.length rs > 0 then
+    failwith "context too weak"
+  else
+    return_ti ds
