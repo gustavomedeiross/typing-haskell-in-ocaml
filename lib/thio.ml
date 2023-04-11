@@ -31,6 +31,10 @@ let rec list_diff xs ys = match xs with
   | [] -> []
   | x :: xs' -> if List.mem x ys then list_diff xs' ys else x :: list_diff xs' ys
 
+let foldr1 f l = match l with
+| [] -> assert false
+| x :: tail ->  List.fold_right f tail x
+
 type type_err = TypeError of string
 
 type 'a or_type_err = ('a, type_err) result
@@ -135,11 +139,15 @@ let rec apply_typ (s : subst) (typ : typ) : typ =
   | TApp (l, r) -> TApp (apply_typ s l, apply_typ s r)
   | t -> t
 
+let apply_typs s typs = apply_list s typs apply_typ
+
 let rec ftv_typ : typ -> tyvar list = function
   | TVar u -> [u]
   (* TODO fix *)
   | TApp (l, r) -> union equal_tyvar (ftv_typ l) (ftv_typ r)
   | _ -> []
+
+let ftv_typs ts = ftv_list ts ftv_typ
 
 (* TODO give a name *)
 let (@@) (s1 : subst) (s2 : subst) : subst =
@@ -858,3 +866,34 @@ let ti_expl (class_env : class_env) (assumptions : assump list) (binding : expl)
     failwith "context too weak"
   else
     return_ti ds
+
+(* |-- Implicitly typed bindings *)
+type impl = id * alt list
+
+let restricted (bs : impl list) : bool =
+  let simple (_, alts) = List.exists (fun alt -> alt |> fst |> List.length == 0) alts in
+  List.exists simple bs
+
+let ti_impls (class_env : class_env) (assumps : assump list) (bindings : impl list) : (pred list * assump list) ti =
+  let+ ts = map_m_ti (fun _ -> new_tvar Star) bindings in
+  let ids = List.map fst bindings in
+  let schemes = List.map to_scheme ts in
+  let assumps' = List.map2 (fun a b -> a, b) ids schemes @ assumps in
+  let altss = List.map snd bindings in
+  let+ pss = sequence_ti (List.map2 (ti_alts class_env assumps') altss ts) in
+  let+ subst = get_subst in
+  let ps' = apply_preds subst (List.concat pss) in
+  let ts' = apply_typs subst ts in
+  let fs = ftv_assumps (apply_assumps subst assumps) in
+  let vss = List.map ftv_typ ts' in
+  let gs = list_diff (foldr1 (union equal_tyvar) vss) fs in
+  let (ds, rs) = split_exn class_env fs (foldr1 (intersect equal_tyvar) vss) ps' in
+  if restricted bindings then
+    let gs' = list_diff gs (ftv_preds rs) in
+    let scs' = List.map (fun t' -> quantify gs' ([], t')) ts' in
+    let assumps = List.map2 (fun a b -> a, b) ids scs' in
+    return_ti (ds @ rs, assumps)
+  else
+    let scs' = List.map (fun t' -> quantify gs (rs, t')) ts' in
+    let assumps = List.map2 (fun a b -> a, b) ids scs' in
+    return_ti (ds, assumps)
