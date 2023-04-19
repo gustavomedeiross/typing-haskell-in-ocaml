@@ -5,7 +5,7 @@
 (generate_opam_files true)
 
 (source
- (github mendes13/thio))
+ (github gustavomdeiros/thio))
 
 (authors "Gustavo Medeiros")
 
