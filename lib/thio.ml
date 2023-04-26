@@ -525,6 +525,8 @@ let reduce (class_env : class_env) (preds : pred list) : (pred list, type_err) r
   |> to_head_normal_form_list class_env
   |> Result.map (simplify class_env)
 
+let reduce_exn ce ps = reduce ce ps |> Result.get_ok
+
 (*
   From "Typing Haskell In Haskell":
 
@@ -826,6 +828,8 @@ let defaulted_preds : class_env -> tyvar list -> pred list -> pred list or_type_
 let default_subst : class_env -> tyvar list -> pred list -> subst or_type_err =
   with_defaults (fun ambs ts -> List.combine (List.map fst ambs) ts)
 
+let default_subst_exn ce vars ps = default_subst ce vars ps |> Result.get_ok
+
 (* we can use split to rewrite and break ps into a pair (ds, rs) of deferred predicates ds and “retained” predicates rs.
    The predicates in rs will be used to form an inferred type (rs :=> t) for h, while the predicates in ds will be passed out as constraints to the enclosing scope.
 
@@ -897,3 +901,34 @@ let ti_impls (class_env : class_env) (assumps : assump list) (bindings : impl li
     let scs' = List.map (fun t' -> quantify gs (rs, t')) ts' in
     let assumps = List.map2 (fun a b -> a, b) ids scs' in
     return_ti (ds, assumps)
+
+type bind_group = (expl list * impl list list)
+
+let rec ti_seq (ti : ('bg, assump list) infer) class_env assumps bgs : (pred list * assump list) ti =
+  match bgs with
+  | [] -> return_ti ([], [])
+  | bs :: bss ->
+     let+ (ps, assumps') = ti class_env assumps bs in
+     let+ (qs, assumps'') = ti_seq ti class_env (assumps' @ assumps) bss in
+     return_ti (ps @ qs, assumps'' @ assumps')
+
+let ti_bind_group class_env assumps bind_groups : (pred list * 't) ti =
+  let (es, iss) = bind_groups in
+  let assumps' = List.map (fun (v, sc, _alts) -> (v, sc)) es in
+  let+ (ps, assumps'') = ti_seq ti_impls class_env (assumps' @ assumps) iss in
+  let+ qss = map_m_ti (ti_expl class_env (assumps'' @ assumps' @ assumps)) es in
+  return_ti (ps @ List.concat qss, assumps'' @ assumps')
+
+
+(* |- Top-level Binding Groups *)
+type program = bind_group list
+
+let ti_program (class_env : class_env) (assumps : assump list) (program: program) : assump list =
+  let ti_program' program =
+    let+ (ps, assumps') = ti_seq ti_bind_group class_env assumps program in
+    let+ subst = get_subst in
+    let rs = reduce_exn class_env (apply_preds subst ps) in
+    let subst' = default_subst_exn class_env [] rs in
+    return_ti (apply_assumps (subst' @@ subst) assumps')
+  in
+  run_ti (ti_program' program)
