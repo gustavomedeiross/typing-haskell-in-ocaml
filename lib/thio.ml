@@ -543,6 +543,7 @@ let sc_entail (class_env : class_env) (preds : pred list) (pred : pred) : bool =
 
 (* |- Type Schemes *)
 
+(* e.g. ∀ a . (Eq a) => a -> a -> Bool *)
 type scheme = Forall of kind list * qual_type
 [@@deriving eq]
 
@@ -552,7 +553,11 @@ let apply_scheme (subst : subst) (Forall (kinds, qual_type)) : scheme =
 let ftv_scheme (Forall (_, qual_type)) : tyvar list =
   ftv_qual_type qual_type
 
-(* Type schemes are constructed by quantifying a qualified type qual_type with respect to a list of type variables tyvars: *)
+(* |- Takes a list of variables to quantify (e.g. ∀ a b c), and a qual_type to quantify.
+
+   1. The function takes intersection of the free type variables in the qual_type (all variables, as all of them will be unbound) and the type variables to quantify (forall list).
+   2. Then, it substitutes those variables for a (TGen n) value.
+   3. The kind of those variables are kept within the kinds list of the scheme type. (Can be found by index lookup using TGen n). *)
 let quantify (tyvars : tyvar list) (qual_type : qual_type) : scheme =
   let tyvars' =
     ftv_qual_type qual_type
