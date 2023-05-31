@@ -665,6 +665,62 @@ let fresh_inst (Forall (kinds, qual_type)) : qual_type ti =
 
 (* |- Type Inference *)
 
+(* |-- Ambiguity *)
+
+type ambiguity = tyvar * pred list
+
+let ambiguities (vars : tyvar list) (preds : pred list) : ambiguity list =
+  list_diff (ftv_list preds ftv_pred) vars
+  |> List.map (fun v ->
+         (v, List.filter (fun p -> List.mem v (ftv_pred p)) preds))
+
+let num_classes = ["Num"; "Integral"; "Floating"; "Fractional"; "Real"; "RealFloat"; "RealFrac"]
+
+let std_classes = ["Eq"; "Ord"; "Show"; "Read"; "Bounded"; "Enum"; "Ix"; "Functor"; "Monad"; "MonadPlus"] @ num_classes
+
+let candidates (class_env : class_env) (v, preds : ambiguity) : typ list =
+  let ids = List.map (fun (IsIn (id, _)) -> id) preds in
+  let types = List.map (fun (IsIn (_, typ)) -> typ) preds in
+  class_env.defaults
+  |> List.filter
+      (fun default_typ -> List.for_all (fun i -> entail class_env [] (IsIn (i, default_typ))) ids)
+  |> List.filter
+    (fun _default_typ ->
+      List.for_all (fun i -> List.mem i num_classes) ids &&
+      List.for_all (fun i -> List.mem i std_classes) ids &&
+      List.for_all (fun t -> equal_typ t (TVar v)) types)
+
+let with_defaults (f : ambiguity list -> typ list -> 'a) (ce : class_env) (vs : tyvar list) (ps : pred list) : 'a or_type_err =
+  let ambs = ambiguities vs ps in
+  let tss = List.map (fun amb -> candidates ce amb) ambs in
+  if List.exists (fun ts -> ts |> List.length == 0) tss then
+    Error (TypeError "cannot resolve ambiguity")
+  else
+    Ok (f ambs (List.map List.hd tss))
+
+let defaulted_preds : class_env -> tyvar list -> pred list -> pred list or_type_err =
+  with_defaults (fun ambs _ts -> List.concat (List.map snd ambs))
+
+let default_subst : class_env -> tyvar list -> pred list -> subst or_type_err =
+  with_defaults (fun ambs ts -> List.combine (List.map fst ambs) ts)
+
+let default_subst_exn ce vars ps = default_subst ce vars ps |> Result.get_ok
+
+(* we can use split to rewrite and break ps into a pair (ds, rs) of deferred predicates ds and “retained” predicates rs.
+   The predicates in rs will be used to form an inferred type (rs :=> t) for h, while the predicates in ds will be passed out as constraints to the enclosing scope.
+
+   In addition to a list of predicates ps, the split function is parameterized by two lists of type variables.
+   The first, fs, specifies the set of “fixed” variables, which are just the variables appearing free in the assumptions.
+   The second, gs, specifies the set of variables over which we would like to quantify; *)
+let split (class_env : class_env) (fs: tyvar list) (gs : tyvar list) (ps : pred list) : (pred list * pred list) or_type_err =
+  let* ps' = reduce class_env ps in
+  let (ds, rs) = List.partition (fun p ->
+                     List.for_all (fun x -> List.mem x fs) (ftv_pred p)
+                   ) ps' in
+  let* rs' = defaulted_preds class_env (fs @ gs) rs in
+  Result.ok (ds, list_diff rs rs')
+
+let split_exn ce fs gs ps = split ce fs gs ps |> Result.get_ok
 
 (* 'e is an expression and 't is a corresponding type *)
 type ('e, 't) infer  = class_env -> assump list -> 'e -> (pred list * 't) ti
@@ -758,7 +814,23 @@ type expr =
      We use values of type Assump to supply a name and type scheme, which is all the information that we need for the purposes of type inference. *)
   | Const of assump
   | Application of expr * expr
-  (* TODO: | Let of bind_group * expr *)
+  | Let of bind_group * expr
+(* |- Binding Groups *)
+and bind_group = (expl list * impl list list)
+(* |-- Explicitly typed bindings *)
+and expl = id * scheme * (alt list)
+(* |-- Implicitly typed bindings *)
+and impl = id * alt list
+(* An alternative specifies the left and right hand sides of a function definition.
+   With a more complete syntax for Expr, values of type Alt might also be used in the representation of lambda and case expressions. *)
+and alt = (pattern list) * expr
+
+(* |- Top-level Binding Groups *)
+type program = bind_group list
+
+let restricted (bs : impl list) : bool =
+  let simple (_, alts) = List.exists (fun alt -> alt |> fst |> List.length == 0) alts in
+  List.exists simple bs
 
 let rec ti_expr (class_env : class_env) (assumps : assump list) (expr : expr) : (pred list * typ) ti =
   match expr with
@@ -776,88 +848,24 @@ let rec ti_expr (class_env : class_env) (assumps : assump list) (expr : expr) : 
      let+ t = new_tvar Star in
      let+ () = unify (fn func_typ t) expr_typ in
      return_ti (expr_ps @ func_ps, t)
-(* TODO: bindgroup *)
+  | Let (bind_groups, expr) ->
+     let+ (ps, assumps') = ti_bind_group class_env assumps bind_groups in
+     let+ (qs, t) = ti_expr class_env (assumps' @ assumps) expr in
+     return_ti (ps @ qs, t)
 
 (* |-- Type inference for alternatives *)
 
-(* An alternative specifies the left and right hand sides of a function definition.
-   With a more complete syntax for Expr, values of type Alt might also be used in the representation of lambda and case expressions. *)
-type alt = (pattern list) * expr
-
-let ti_alt (class_env : class_env) (assumps : assump list) (pats, e : alt) : (pred list * typ) ti =
+and ti_alt (class_env : class_env) (assumps : assump list) (pats, e : alt) : (pred list * typ) ti =
   let+ (ps, assumps', ts) = ti_patterns pats in
   let+ (qs, t) = ti_expr class_env (assumps' @ assumps) e in
   return_ti (ps @ qs, List.fold_right fn ts t)
 
-let ti_alts (ce : class_env) (assumps : assump list) (alts : alt list) (t : typ) : (pred list) ti =
+and ti_alts (ce : class_env) (assumps : assump list) (alts : alt list) (t : typ) : (pred list) ti =
   let+ psts = map_m_ti (ti_alt ce assumps) alts in
   let+ _ = map_m_ti (unify t) (List.map snd psts) in
   return_ti (List.concat (List.map fst psts))
 
-(* |-- Ambiguity *)
-
-type ambiguity = tyvar * pred list
-
-let ambiguities (vars : tyvar list) (preds : pred list) : ambiguity list =
-  list_diff (ftv_list preds ftv_pred) vars
-  |> List.map (fun v ->
-         (v, List.filter (fun p -> List.mem v (ftv_pred p)) preds))
-
-let num_classes = ["Num"; "Integral"; "Floating"; "Fractional"; "Real"; "RealFloat"; "RealFrac"]
-
-let std_classes = ["Eq"; "Ord"; "Show"; "Read"; "Bounded"; "Enum"; "Ix"; "Functor"; "Monad"; "MonadPlus"] @ num_classes
-
-let candidates (class_env : class_env) (v, preds : ambiguity) : typ list =
-  let ids = List.map (fun (IsIn (id, _)) -> id) preds in
-  let types = List.map (fun (IsIn (_, typ)) -> typ) preds in
-  class_env.defaults
-  |> List.filter
-      (fun default_typ -> List.for_all (fun i -> entail class_env [] (IsIn (i, default_typ))) ids)
-  |> List.filter
-    (fun _default_typ ->
-      List.for_all (fun i -> List.mem i num_classes) ids &&
-      List.for_all (fun i -> List.mem i std_classes) ids &&
-      List.for_all (fun t -> equal_typ t (TVar v)) types)
-
-let with_defaults (f : ambiguity list -> typ list -> 'a) (ce : class_env) (vs : tyvar list) (ps : pred list) : 'a or_type_err =
-  let ambs = ambiguities vs ps in
-  let tss = List.map (fun amb -> candidates ce amb) ambs in
-  if List.exists (fun ts -> ts |> List.length == 0) tss then
-    Error (TypeError "cannot resolve ambiguity")
-  else
-    Ok (f ambs (List.map List.hd tss))
-
-let defaulted_preds : class_env -> tyvar list -> pred list -> pred list or_type_err =
-  with_defaults (fun ambs _ts -> List.concat (List.map snd ambs))
-
-let default_subst : class_env -> tyvar list -> pred list -> subst or_type_err =
-  with_defaults (fun ambs ts -> List.combine (List.map fst ambs) ts)
-
-let default_subst_exn ce vars ps = default_subst ce vars ps |> Result.get_ok
-
-(* we can use split to rewrite and break ps into a pair (ds, rs) of deferred predicates ds and “retained” predicates rs.
-   The predicates in rs will be used to form an inferred type (rs :=> t) for h, while the predicates in ds will be passed out as constraints to the enclosing scope.
-
-   In addition to a list of predicates ps, the split function is parameterized by two lists of type variables.
-   The first, fs, specifies the set of “fixed” variables, which are just the variables appearing free in the assumptions.
-   The second, gs, specifies the set of variables over which we would like to quantify; *)
-let split (class_env : class_env) (fs: tyvar list) (gs : tyvar list) (ps : pred list) : (pred list * pred list) or_type_err =
-  let* ps' = reduce class_env ps in
-  let (ds, rs) = List.partition (fun p ->
-                     List.for_all (fun x -> List.mem x fs) (ftv_pred p)
-                   ) ps' in
-  let* rs' = defaulted_preds class_env (fs @ gs) rs in
-  Result.ok (ds, list_diff rs rs')
-
-let split_exn ce fs gs ps = split ce fs gs ps |> Result.get_ok
-
-(* |- Binding Groups *)
-
-
-(* |-- Explicitly typed bindings *)
-type expl = id * scheme * (alt list)
-
-let ti_expl (class_env : class_env) (assumptions : assump list) (binding : expl) : pred list ti =
+and ti_expl (class_env : class_env) (assumptions : assump list) (binding : expl) : pred list ti =
   let (_id, scheme, alts) = binding in
   let+ (qs, typ) = fresh_inst scheme in
   let+ ps = ti_alts class_env assumptions alts typ in
@@ -876,14 +884,7 @@ let ti_expl (class_env : class_env) (assumptions : assump list) (binding : expl)
   else
     return_ti ds
 
-(* |-- Implicitly typed bindings *)
-type impl = id * alt list
-
-let restricted (bs : impl list) : bool =
-  let simple (_, alts) = List.exists (fun alt -> alt |> fst |> List.length == 0) alts in
-  List.exists simple bs
-
-let ti_impls (class_env : class_env) (assumps : assump list) (bindings : impl list) : (pred list * assump list) ti =
+and ti_impls (class_env : class_env) (assumps : assump list) (bindings : impl list) : (pred list * assump list) ti =
   let+ ts = map_m_ti (fun _ -> new_tvar Star) bindings in
   let ids = List.map fst bindings in
   let schemes = List.map to_scheme ts in
@@ -907,9 +908,8 @@ let ti_impls (class_env : class_env) (assumps : assump list) (bindings : impl li
     let assumps = List.map2 (fun a b -> a, b) ids scs' in
     return_ti (ds, assumps)
 
-type bind_group = (expl list * impl list list)
-
-let rec ti_seq (ti : ('bg, assump list) infer) class_env assumps bgs : (pred list * assump list) ti =
+and ti_seq : 'bg . ('bg, assump list) infer -> ('bg list, assump list) infer =
+  fun ti class_env assumps bgs ->
   match bgs with
   | [] -> return_ti ([], [])
   | bs :: bss ->
@@ -917,18 +917,14 @@ let rec ti_seq (ti : ('bg, assump list) infer) class_env assumps bgs : (pred lis
      let+ (qs, assumps'') = ti_seq ti class_env (assumps' @ assumps) bss in
      return_ti (ps @ qs, assumps'' @ assumps')
 
-let ti_bind_group class_env assumps bind_groups : (pred list * 't) ti =
+and ti_bind_group : (bind_group, assump list) infer = fun class_env assumps bind_groups ->
   let (es, iss) = bind_groups in
   let assumps' = List.map (fun (v, sc, _alts) -> (v, sc)) es in
   let+ (ps, assumps'') = ti_seq ti_impls class_env (assumps' @ assumps) iss in
   let+ qss = map_m_ti (ti_expl class_env (assumps'' @ assumps' @ assumps)) es in
   return_ti (ps @ List.concat qss, assumps'' @ assumps')
 
-
-(* |- Top-level Binding Groups *)
-type program = bind_group list
-
-let ti_program (class_env : class_env) (assumps : assump list) (program: program) : assump list =
+and ti_program (class_env : class_env) (assumps : assump list) (program : program) : assump list =
   let ti_program' program =
     let+ (ps, assumps') = ti_seq ti_bind_group class_env assumps program in
     let+ subst = get_subst in
