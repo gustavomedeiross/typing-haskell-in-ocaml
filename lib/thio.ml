@@ -32,11 +32,3 @@ let preds_to_string preds =
 let qual_type_to_string (preds, typ) =
   (preds_to_string preds) ^ " => " ^ (type_to_string typ)
     
-
-(* let rec type_to_string typ = *)
-(*   let open Infer in *)
-(*   match typ with *)
-(*   | TVar (Tyvar (id, _kind)) -> "TVar " ^ id *)
-(*   | TCon (Tycon (id, _kind)) -> "TCon " ^ id *)
-(*   | TApp (t1, t2) -> (type_to_string t1) ^ " " ^ (type_to_string t2) *)
-(*   | TGen n -> "TGen " ^ (Int.to_string n) *)
