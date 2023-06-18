@@ -1,3 +1,4 @@
 (test
- (name thio)
- (libraries alcotest))
+ (name thio_tests)
+ (libraries thio alcotest)
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq)))

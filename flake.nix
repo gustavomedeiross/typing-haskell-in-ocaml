@@ -73,7 +73,12 @@
 
             strictDeps = true;
 
-            propagatedBuildInputs = [ ocamlPackages.ppxlib ocamlPackages.ppx_deriving ocamlPackages.alcotest ];
+            propagatedBuildInputs = [
+              ocamlPackages.menhir # also includes ocamllex
+              ocamlPackages.ppxlib
+              ocamlPackages.ppx_deriving
+              ocamlPackages.alcotest
+            ];
 
             checkInputs = [ ocamlPackages.alcotest ];
 
