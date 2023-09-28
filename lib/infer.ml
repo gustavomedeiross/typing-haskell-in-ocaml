@@ -213,7 +213,7 @@ type pred = IsIn of id * typ
 [@@deriving eq]
 
 (*
-  |- Represents a qualifier (or also quantifier I believe would also correct) for a type.
+  |- Represents a qualifier for a type.
 
    - A function type, e.g.: "(Eq a, Eq b) => a -> b -> Bool"
    - A type class definition, e.g.: "class Applicative m => Monad m where"
